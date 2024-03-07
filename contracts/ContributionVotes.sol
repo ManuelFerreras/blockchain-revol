@@ -91,59 +91,54 @@ contract LoverDAO is Initializable, GovernorUpgradeable, GovernorSettingsUpgrade
 
     mapping(uint256 => ContributionProposal) public contributionProposals;
 
-    // Given a proposal, analyses proposal votes.
-    function executeCompensation(uint256 _proposalId) public onlyGovernance {
-        require(contributionProposals[_proposalId].executed == false, "LoverDAO: Proposal already executed");
+    function proposeCompensation (
+        string memory description,
+        uint256 amount
+    ) public virtual returns (uint256) {
+        require(amount > 0, "LoverDAO: Invalid amount");
+
+        // create real proposal with no actions.
+        address[] memory targets = new address[](1);
+        targets[0] = msg.sender;
+        uint256 proposalId = propose(targets, new uint256[](1), new bytes[](1), description);
+
+        // Save contribution proposal.
+        contributionProposals[proposalId] = ContributionProposal(targets[0], amount, 0, false);
+
+        return proposalId;
+    }
+
+    function castContributionVote(uint256 proposalId, uint8 support, uint8 percentageApproved) public returns (uint256) {
+        require(percentageApproved <= 100, "LoverDAO: Invalid percentage");
+
+        // We cast a real vote to ensure all checks are done.
+        address voter = _msgSender();
+        uint256 weight = _castVote(proposalId, voter, support, "");
+
+        // Add to the average of the proposal in a linear way, where percentageApproved is total amount of tokens approved by the voter * 100. if vote is against, then it is 0.
+        contributionProposals[proposalId].average += support == 1 ? percentageApproved * weight : 0;
+
+        return weight;
+    }
+
+    function executeCompensation(uint256 _proposalId) public payable {
+        // Execute the real proposal. This ensures that all proposal checks are done before executing the contribution proposal.
+        execute(_proposalId);
     
+        // Get the votes for the proposal.
         (uint256 againstVotes, uint256 forVotes, uint256 abstainVotes) = proposalVotes(_proposalId);
         ContributionProposal memory proposal = contributionProposals[_proposalId];
 
+        // Take the amount and multiply by the average percentage of votes for the proposal.
         uint256 totalVotes = againstVotes + forVotes + abstainVotes;
-        uint256 contributionAmount = (proposal.amount * (proposal.average / totalVotes)) / 100; // Take the amount and multiply by the average percentage of votes for the proposal.
+        uint256 contributionAmount = (proposal.amount * (proposal.average / totalVotes)) / 100;
 
+        // Check if the DAO has enough funds to execute the proposal.
         uint256 availableDaoBalance = IERC20(address(token())).balanceOf(address(this));
         require(availableDaoBalance >= contributionAmount, "LoverDAO: Not enough funds to execute proposal");
 
         // Transfer the funds to the proposer.
         contributionProposals[_proposalId].executed = true;
         IERC20(address(token())).transfer(proposal.to, contributionAmount);
-    }
-
-    function proposeCompensation (
-        string memory description,
-        address to,
-        uint256 amount
-    ) public virtual returns (uint256) {
-        address proposer = _msgSender();
-
-        // check description restriction
-        if (!_isValidDescriptionForProposer(proposer, description)) {
-            revert GovernorRestrictedProposer(proposer);
-        }
-
-        // check proposal threshold
-        uint256 proposerVotes = getVotes(proposer, block.number - 1);
-        uint256 votesThreshold = proposalThreshold();
-        if (proposerVotes < votesThreshold) {
-            revert GovernorInsufficientProposerVotes(proposer, proposerVotes, votesThreshold);
-        }
-
-        // create real proposal with arbitrary actions.
-        address[] memory targets = new address[](1);
-        targets[0] = to;
-        uint256 proposalId = _propose(new address[](1), new uint256[](1), new bytes[](1), description, proposer);
-        contributionProposals[proposalId] = ContributionProposal(to, amount, 0, false);
-
-        return proposalId;
-    }
-
-    function castContributionVote(uint256 proposalId, uint8 support, uint8 percentageApproved) public returns (uint256) {
-        address voter = _msgSender();
-        uint256 weight = _castVote(proposalId, voter, support, "");
-
-        // add to the average of the proposal, where percentageApproved is total amount of tokens approved by the voter * 100. if vote is against, then it is 0.
-        contributionProposals[proposalId].average += support == 1 ? percentageApproved * weight : 0;
-
-        return weight;
     }
 }
