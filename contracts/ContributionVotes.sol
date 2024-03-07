@@ -110,9 +110,6 @@ contract LoverDAO is Initializable, GovernorUpgradeable, GovernorSettingsUpgrade
     }
 
     function proposeCompensation (
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
         string memory description,
         address to,
         uint256 amount
@@ -131,7 +128,10 @@ contract LoverDAO is Initializable, GovernorUpgradeable, GovernorSettingsUpgrade
             revert GovernorInsufficientProposerVotes(proposer, proposerVotes, votesThreshold);
         }
 
-        uint256 proposalId = _propose(targets, values, calldatas, description, proposer);
+        // create real proposal with arbitrary actions.
+        address[] memory targets = new address[](1);
+        targets[0] = to;
+        uint256 proposalId = _propose(new address[](1), new uint256[](1), new bytes[](1), description, proposer);
         contributionProposals[proposalId] = ContributionProposal(to, amount, 0, false);
 
         return proposalId;
