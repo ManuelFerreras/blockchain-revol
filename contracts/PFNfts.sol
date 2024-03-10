@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: MIT
+// Compatible with OpenZeppelin Contracts ^5.0.0
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155BurnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract PFNfts is ERC1155, Ownable {
+contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC1155BurnableUpgradeable, ERC1155SupplyUpgradeable, UUPSUpgradeable {
+    ///////// STATE VARIABLES
     struct Campaign {
         uint256 price;
         uint256 finishDate;
@@ -22,23 +28,46 @@ contract PFNfts is ERC1155, Ownable {
 
     IERC20 private _currency;
 
-    uint256 private _nextCampaignId = 0;
+    uint256 private _nextCampaignId = 1;
     uint256 private _trasuryFee = 0;
     uint256 private _liquidityFee = 0;
+    uint256 private constant MINCAMPAIGNTIME = 7 days;
 
     address private _treasuryAddress;
     address private _liquidityAddress;
 
-
-    ///////// CONSTRUCTOR
-    constructor(address initialOwner, address currency) ERC1155("PFNfts") Ownable(initialOwner) {
-        _currency = IERC20(currency);
-    }
-
-
     ///////// EVENTS
     event CampaignCreated(uint256 id, string name);
 
+    ///////// MODIFIERS
+    modifier onlyCreatedCampaign(uint256 id) {
+        require(_batchIdToCampaign[id].id == id, "Invalid Campaign.");
+        _;
+    }
+
+    modifier onlyOngoingCampaign(uint256 id) {
+        require(_batchIdToCampaign[id].finishDate >= block.timestamp, "Campaign has already ended.");
+        _;
+    }
+
+    modifier onlyEnoughSupply(uint256 id, uint256 amount) {
+        require(_batchIdToCampaign[id].mintedSupply + amount <= _batchIdToCampaign[id].maxSupply);
+        _;
+    }
+
+    ///////// INITIALIZER
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address initialOwner, address currency) initializer public {
+        __ERC1155_init("PFNfts");
+        __Ownable_init(initialOwner);
+        __ERC1155Burnable_init();
+        __ERC1155Supply_init();
+        __UUPSUpgradeable_init();
+        _currency = IERC20(currency);
+    }
 
     ///////// OWNER FUNCTIONS
     function setURI(string memory newuri) public onlyOwner {
@@ -64,6 +93,29 @@ contract PFNfts is ERC1155, Ownable {
 
 
     ///////// PUBLIC CALLABLE FUNCTIONS
+    function createCampaign(
+        uint256 _price,
+        uint256 _finishDate,
+        uint256 _maxSupply,
+        string memory _name,
+        string memory _description,
+        address _campaignOwner
+    )
+        external
+    {
+        require(_price > 0, "Invalid price.");
+        require(_finishDate >= block.timestamp + MINCAMPAIGNTIME, "Invalid finish date.");
+        require(_maxSupply > 0, "Invalid max supply.");
+        require(keccak256(abi.encodePacked(_name)) != keccak256(abi.encodePacked("")), "Invalid name.");
+        require(_campaignOwner != address(0), "Invalid Owner Address");
+
+        Campaign memory _newCampaign = Campaign(_price, _finishDate, _nextCampaignId, _maxSupply, 0, _name, _description, _campaignOwner);
+        _batchIdToCampaign[_nextCampaignId] = _newCampaign;
+        _nextCampaignId++;
+
+        emit CampaignCreated(_nextCampaignId, _name);
+    }
+
     function mint(
         address account,
         uint256 id,
@@ -77,56 +129,48 @@ contract PFNfts is ERC1155, Ownable {
     {
         uint256 _price = _batchIdToCampaign[id].price * amount;
         
-        uint256 _liquidityAmount;
-        uint256 _treasuryAmount;
-        uint256 _ownerAmount;
+        // Calculate fees.
+        uint256 _liquidityAmount = _price * _liquidityFee / 100;
+        uint256 _treasuryAmount = _price * _trasuryFee / 100;
+        uint256 _ownerAmount = _price - _liquidityAmount - _treasuryAmount;
 
+        // Transfer funds.
+        _currency.transferFrom(account, _batchIdToCampaign[id].campaignOwner, _ownerAmount);
+        _currency.transferFrom(account, _liquidityAddress, _liquidityAmount);
+        _currency.transferFrom(account, _treasuryAddress, _treasuryAmount);
+
+        // TODO: Buyback Revol and return to the user.
+
+        // Update Campaign details.
+        _batchIdToCampaign[id].mintedSupply += amount;
+
+        // Mint NFTs.
         _mint(account, id, amount, data);
         _participatedInCampaign[id][msg.sender] += amount;
     }
 
-    function createCampaign(
-        uint256 _price,
-        uint256 _finishDate,
-        uint256 _maxSupply,
-        string memory _name,
-        string memory _description,
-        address _campaignOwner
-    )
-        external
-    {
-        require(_price > 0, "Invalid price.");
-        require(_finishDate >= block.timestamp, "Invalid finish date.");
-        require(_maxSupply > 0, "Invalid max supply.");
-        require(keccak256(abi.encodePacked(_name)) != keccak256(abi.encodePacked("")), "Invalid name.");
-        require(_campaignOwner != address(0), "Invalid Owner Address");
-
-        Campaign memory _newCampaign = Campaign(_price, _finishDate, _nextCampaignId, _maxSupply, 0, _name, _description, _campaignOwner);
-        _batchIdToCampaign[_nextCampaignId] = _newCampaign;
-        _nextCampaignId++;
-
-        emit CampaignCreated(_nextCampaignId, _name);
-    }
-
-    // Function to call when using an NFT in a store.
     function usePFNft(uint256 batch, uint256 amount) external {
-        _burn()
+        // Prepare Data.
+        uint256[] memory _batchList = new uint256[](1);
+        uint256[] memory _amountList = new uint256[](1);
+        _batchList[0] = batch;
+        _amountList[0] = amount;
+
+        // Burn NFTs.
+        burnBatch(msg.sender, _batchList, _amountList);
     } 
 
+    ///////// INTERNAL FUNCTIONS
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        onlyOwner
+        override
+    {}
 
-    ///////// MODIFIERS
-    modifier onlyCreatedCampaign(uint256 id) {
-        require(_batchIdToCampaign[id].id == id, "Invalid Campaign.");
-        _;
-    }
-
-    modifier onlyOngoingCampaign(uint256 id) {
-        require(_batchIdToCampaign[id].finishDate >= block.timestamp, "Campaign has already ended.");
-        _;
-    }
-
-    modifier onlyEnoughSupply(uint256 id, uint256 amount) {
-        require(_batchIdToCampaign[id].mintedSupply + amount <= _batchIdToCampaign[id].maxSupply);
-        _;
+    function _update(address from, address to, uint256[] memory ids, uint256[] memory values)
+        internal
+        override(ERC1155Upgradeable, ERC1155SupplyUpgradeable)
+    {
+        super._update(from, to, ids, values);
     }
 }
