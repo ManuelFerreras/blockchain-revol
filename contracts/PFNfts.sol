@@ -9,6 +9,7 @@ import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155Supp
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Revol} from "./Revol.sol";
 
 contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC1155BurnableUpgradeable, ERC1155SupplyUpgradeable, UUPSUpgradeable {
     ///////// STATE VARIABLES
@@ -35,6 +36,8 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
 
     address private _treasuryAddress;
     address private _liquidityAddress;
+
+    address private _revolAddress;
 
     ///////// EVENTS
     event CampaignCreated(uint256 id, string name);
@@ -139,14 +142,14 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         _currency.transferFrom(account, _liquidityAddress, _liquidityAmount);
         _currency.transferFrom(account, _treasuryAddress, _treasuryAmount);
 
-        // TODO: Buyback Revol and return to the user.
+        Revol(_revolAddress).buyRevol(_treasuryAmount, account);
 
         // Update Campaign details.
         _batchIdToCampaign[id].mintedSupply += amount;
 
         // Mint NFTs.
         _mint(account, id, amount, data);
-        _participatedInCampaign[id][msg.sender] += amount;
+        _participatedInCampaign[id][account] += amount;
     }
 
     function usePFNft(uint256 batch, uint256 amount) external {
