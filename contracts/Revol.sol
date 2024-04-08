@@ -17,6 +17,7 @@ contract Revol is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, Own
     address private _aaveStakeAddress;
 
     uint256 private _treasureFee;
+    uint256 private immutable decimalFactor = 1e18;
 
     bool public initiated;
 
@@ -41,12 +42,17 @@ contract Revol is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, Own
         _;
     }
 
-    function initialize(address initialOwner) initializer public {
+    function initialize(address initialOwner, uint256 treasureFee_, address daiAddress_, address lpDaiAddress_, address aaveStakeAddress_) initializer public {
         __ERC20_init("Revol", "RVL");
         __ERC20Burnable_init();
         __Ownable_init(initialOwner);
         __ERC20Permit_init("Revol");
         __UUPSUpgradeable_init();
+
+        _treasureFee = treasureFee_;
+        _daiAddress = daiAddress_;
+        _lpDaiAddress = lpDaiAddress_;
+        _aaveStakeAddress = aaveStakeAddress_;
     }
 
     // Swap from Token A to Token B
@@ -55,13 +61,16 @@ contract Revol is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, Own
         uint256 trasureFee = (amountIn * _treasureFee) / 100;
         uint256 amountInAfterFee = amountIn - trasureFee;
         uint256 revolPrice = getRate();
-        uint256 amountOut = amountInAfterFee / revolPrice;
+        uint256 amountOut = amountInAfterFee * decimalFactor / revolPrice;
+
+        IERC20 _dai = IERC20(_daiAddress);
 
         // Transfer DAI from user to contract.
-        require(IERC20(_daiAddress).transferFrom(msg.sender, address(this), amountIn), "Revol: Transfer failed");
+        _dai.approve(_aaveStakeAddress, amountIn);
+        require(_dai.transferFrom(msg.sender, address(this), amountIn), "Revol: Transfer failed");
 
         // Stake DAI in Aave.
-        IPool(_aaveStakeAddress).supply(_daiAddress, IERC20(_daiAddress).balanceOf(address(this)), address(this), 0);
+        IPool(_aaveStakeAddress).supply(_daiAddress, _dai.balanceOf(address(this)), address(this), 0);
 
         // Emit Swap event
         emit Buy(msg.sender, receiver, amountIn, amountOut);
@@ -76,12 +85,13 @@ contract Revol is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, Own
     function sellRevol(uint256 amountIn) public nonReentrant onlyInitiatedAddresses returns (uint256) {
         // Prepare Swap.
         uint256 revolPrice = getRate();
-        uint256 amountOut = amountIn * revolPrice;
+        uint256 amountOut = amountIn * revolPrice / decimalFactor;
 
         // Burn Revol from user
         _burn(msg.sender, amountIn);
 
         // Unstake DAI from Aave.
+        IERC20(_lpDaiAddress).approve(_aaveStakeAddress, amountOut);
         IPool(_aaveStakeAddress).withdraw(_daiAddress, amountOut, address(this));
 
         // Transfer DAI from contract to user.
@@ -97,26 +107,34 @@ contract Revol is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, Own
         uint256 revolSupply = IERC20(address(this)).totalSupply();
         uint256 daiSupply = IERC20(_lpDaiAddress).balanceOf(address(this));
 
-        return daiSupply / revolSupply;
+        return daiSupply * decimalFactor / revolSupply;
     }
 
     function initPool() public onlyOwner onlyPoolNotInitiated {
         require(initiated == false, "Revol: Pool already initiated");
 
+        IERC20 _dai = IERC20(_daiAddress);
+
         // Prepare Swap.
-        uint256 amountIn = 1e18; // 1 DAI
+        uint256 amountIn = 100 * decimalFactor; // 100 DAI
 
         // Transfer DAI from user to contract.
-        require(IERC20(_daiAddress).transferFrom(msg.sender, address(this), amountIn), "Revol: Transfer failed");
+        require(_dai.transferFrom(msg.sender, address(this), amountIn), "Revol: Transfer failed");
+
+        uint256 _daiBalance = _dai.balanceOf(address(this));
 
         // Stake DAI in Aave.
-        IPool(_aaveStakeAddress).supply(_daiAddress, IERC20(_daiAddress).balanceOf(address(this)), address(this), 0);
+        _dai.approve(_aaveStakeAddress, _daiBalance);
+        IPool(_aaveStakeAddress).supply(_daiAddress, _daiBalance, address(this), 0);
 
         // Emit Swap event
-        emit Buy(msg.sender, address(this), amountIn, 1e18);
+        emit Buy(msg.sender, address(this), amountIn, amountIn);
 
         // Mint Revol to user
-        _mint(address(this), 1e18);
+        _mint(address(this), amountIn);
+
+        // Mark pool as initiated.
+        initiated = true;
     }
 
     function setDaiAddress(address daiAddress) public onlyOwner {
@@ -132,7 +150,7 @@ contract Revol is Initializable, ERC20Upgradeable, ERC20BurnableUpgradeable, Own
     }
 
     function setTreasureFee(uint256 treasureFee) public onlyOwner {
-        require(treasureFee <= 10, "Revol: Invalid treasure fee");
+        require(treasureFee <= 100, "Revol: Invalid treasure fee");
         _treasureFee = treasureFee;
     }
 
