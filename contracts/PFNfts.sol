@@ -2,16 +2,16 @@
 // Compatible with OpenZeppelin Contracts ^5.0.0
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155BurnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155SupplyUpgradeable.sol";
+import { ERC1155URIStorageUpgradeable, ERC1155Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155URIStorageUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Revol} from "./Revol.sol";
 
-contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC1155BurnableUpgradeable, ERC1155SupplyUpgradeable, UUPSUpgradeable {
+contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC1155BurnableUpgradeable, ERC1155SupplyUpgradeable, ERC1155URIStorageUpgradeable, UUPSUpgradeable {
     ///////// STATE VARIABLES
     struct Campaign {
         uint256 price;
@@ -30,13 +30,8 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
     IERC20 private _currency;
 
     uint256 private _nextCampaignId = 1;
-    uint256 private _trasuryFee = 0;
-    uint256 private _liquidityFee = 0;
+    uint256 private _fee = 0;
     uint256 private constant MINCAMPAIGNTIME = 7 days;
-
-    address private _treasuryAddress;
-    address private _liquidityAddress;
-
     address private _revolAddress;
 
     ///////// EVENTS
@@ -45,6 +40,11 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
     ///////// MODIFIERS
     modifier onlyCreatedCampaign(uint256 id) {
         require(_batchIdToCampaign[id].id == id, "Invalid Campaign.");
+        _;
+    }
+
+    modifier onlyCampaignOwner(uint256 id) {
+        require(_batchIdToCampaign[id].campaignOwner == msg.sender || msg.sender == owner(), "Not the campaign owner.");
         _;
     }
 
@@ -63,37 +63,52 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         _disableInitializers();
     }
 
-    function initialize(address initialOwner, address currency) initializer public {
+    function initialize(address initialOwner, address currency_, address revolAddress_, uint256 fee_) initializer public {
         __ERC1155_init("PFNfts");
         __Ownable_init(initialOwner);
         __ERC1155Burnable_init();
         __ERC1155Supply_init();
         __UUPSUpgradeable_init();
-        _currency = IERC20(currency);
+        _currency = IERC20(currency_);
+        _revolAddress = revolAddress_;
+        _fee = fee_;
     }
 
     ///////// OWNER FUNCTIONS
-    function setURI(string memory newuri) public onlyOwner {
-        _setURI(newuri);
+    function setRevolAddress(address revolAddress_) external onlyOwner {
+        _revolAddress = revolAddress_;
     }
-    
+
+    function setCurrencyAddress(address currency_) external onlyOwner {
+        _currency = IERC20(currency_);
+    }
+
+    function setFee(uint256 fee_) external onlyOwner {
+        require(fee_ <= 100, "Invalid Fee.");
+        _fee = fee_;
+    }
+
+
 
     ///////// PUBLIC READABLE FUNCTIONS
-    function getAllCampaigns() public view returns(Campaign[] memory) {
+    function getAllCampaigns() external view returns(Campaign[] memory) {
         Campaign[] memory campaigns = new Campaign[](_nextCampaignId - 1);
 
-        for (uint256 i = 0; i < _nextCampaignId; i++) 
+        for (uint256 i = 0; i < _nextCampaignId - 1; i++) 
         {
-            campaigns[i] = _batchIdToCampaign[i];
+            campaigns[i] = _batchIdToCampaign[i + 1];
         }
 
         return campaigns;
     }
 
-    function getCampaign(uint256 id) public view returns(Campaign memory) {
+    function getCampaign(uint256 id) external view returns(Campaign memory) {
         return _batchIdToCampaign[id];
     }
 
+    function checkIfParticipatedInCampaign(uint256 id, address participant) external view returns (uint256) {
+        return _participatedInCampaign[id][participant];
+    }
 
     ///////// PUBLIC CALLABLE FUNCTIONS
     function createCampaign(
@@ -102,6 +117,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         uint256 _maxSupply,
         string memory _name,
         string memory _description,
+        string memory _uri,
         address _campaignOwner
     )
         external
@@ -114,9 +130,10 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
 
         Campaign memory _newCampaign = Campaign(_price, _finishDate, _nextCampaignId, _maxSupply, 0, _name, _description, _campaignOwner);
         _batchIdToCampaign[_nextCampaignId] = _newCampaign;
-        _nextCampaignId++;
-
+        _setURI(_nextCampaignId, _uri);
         emit CampaignCreated(_nextCampaignId, _name);
+
+        _nextCampaignId++;
     }
 
     function mint(
@@ -133,16 +150,15 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         uint256 _price = _batchIdToCampaign[id].price * amount;
         
         // Calculate fees.
-        uint256 _liquidityAmount = _price * _liquidityFee / 100;
-        uint256 _treasuryAmount = _price * _trasuryFee / 100;
-        uint256 _ownerAmount = _price - _liquidityAmount - _treasuryAmount;
+        uint256 _feeAmount = _price * _fee / 100;
+        uint256 _ownerAmount = _price - _feeAmount;
 
         // Transfer funds.
+        _currency.transferFrom(account, address(this), _feeAmount);
         _currency.transferFrom(account, _batchIdToCampaign[id].campaignOwner, _ownerAmount);
-        _currency.transferFrom(account, _liquidityAddress, _liquidityAmount);
-        _currency.transferFrom(account, _treasuryAddress, _treasuryAmount);
 
-        Revol(_revolAddress).buyRevol(_treasuryAmount, account);
+        _currency.approve(_revolAddress, _feeAmount);
+        Revol(_revolAddress).buyRevol(_feeAmount, account);
 
         // Update Campaign details.
         _batchIdToCampaign[id].mintedSupply += amount;
@@ -162,6 +178,23 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         // Burn NFTs.
         burnBatch(msg.sender, _batchList, _amountList);
     } 
+
+    function setURI(uint256 _campaignId, string memory _newURI) public onlyCampaignOwner(_campaignId) {
+        _setURI(_campaignId, _newURI);
+    }
+
+    ///////// OVERRIDE FUNCTIONS
+    /// @notice returns full token URI, including baseURI and token metadata URI
+    /// @param tokenId The token id to get URI for
+    /// @return tokenURI the URI of the token
+    function uri(uint256 tokenId)
+        public
+        view
+        override(ERC1155Upgradeable, ERC1155URIStorageUpgradeable)
+        returns (string memory tokenURI)
+    {
+        return ERC1155URIStorageUpgradeable.uri(tokenId);
+    }
 
     ///////// INTERNAL FUNCTIONS
     function _authorizeUpgrade(address newImplementation)

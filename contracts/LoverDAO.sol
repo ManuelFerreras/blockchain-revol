@@ -25,7 +25,7 @@ contract LoverDAO is Initializable, GovernorUpgradeable, GovernorSettingsUpgrade
         __GovernorCountingSimple_init();
         __GovernorStorage_init();
         __GovernorVotes_init(_token);
-        __GovernorVotesQuorumFraction_init(4);
+        __GovernorVotesQuorumFraction_init(4); // Quorum for proposals.
         __Ownable_init(initialOwner);
         __UUPSUpgradeable_init();
     }
