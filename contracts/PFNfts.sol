@@ -15,6 +15,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
     ///////// STATE VARIABLES
     struct Campaign {
         uint256 price;
+        uint256 discountPercentage;
         uint256 finishDate;
         uint256 id;
         uint256 maxSupply;
@@ -30,8 +31,11 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
     IERC20 private _currency;
 
     uint256 private _nextCampaignId = 1;
-    uint256 private _fee = 0;
     uint256 private constant MINCAMPAIGNTIME = 7 days;
+
+    uint256 private maxBuybackFeePercentage = 5;
+    uint256 private buybackFeePercentage = 20;
+
     address private _revolAddress;
 
     ///////// EVENTS
@@ -63,7 +67,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         _disableInitializers();
     }
 
-    function initialize(address initialOwner, address currency_, address revolAddress_, uint256 fee_) initializer public {
+    function initialize(address initialOwner, address currency_, address revolAddress_, uint256 maxBuybackFeePercentage_) initializer public {
         __ERC1155_init("PFNfts");
         __Ownable_init(initialOwner);
         __ERC1155Burnable_init();
@@ -71,7 +75,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         __UUPSUpgradeable_init();
         _currency = IERC20(currency_);
         _revolAddress = revolAddress_;
-        _fee = fee_;
+        maxBuybackFeePercentage = maxBuybackFeePercentage_;
     }
 
     ///////// OWNER FUNCTIONS
@@ -83,11 +87,15 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         _currency = IERC20(currency_);
     }
 
-    function setFee(uint256 fee_) external onlyOwner {
-        require(fee_ <= 100, "Invalid Fee.");
-        _fee = fee_;
+    function setMaxBuybackFeePercentage(uint256 percentage) external onlyOwner {
+        require(percentage <= 100, "Invalid percentage.");
+        maxBuybackFeePercentage = percentage;
     }
 
+    function setBuybackFeePercentage(uint256 percentage) external onlyOwner {
+        require(percentage <= 100, "Invalid percentage.");
+        buybackFeePercentage = percentage;
+    }
 
 
     ///////// PUBLIC READABLE FUNCTIONS
@@ -113,6 +121,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
     ///////// PUBLIC CALLABLE FUNCTIONS
     function createCampaign(
         uint256 _price,
+        uint256 _discountPercentage,
         uint256 _finishDate,
         uint256 _maxSupply,
         string memory _name,
@@ -128,7 +137,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         require(keccak256(abi.encodePacked(_name)) != keccak256(abi.encodePacked("")), "Invalid name.");
         require(_campaignOwner != address(0), "Invalid Owner Address");
 
-        Campaign memory _newCampaign = Campaign(_price, _finishDate, _nextCampaignId, _maxSupply, 0, _name, _description, _campaignOwner);
+        Campaign memory _newCampaign = Campaign(_price, _discountPercentage, _finishDate, _nextCampaignId, _maxSupply, 0, _name, _description, _campaignOwner);
         _batchIdToCampaign[_nextCampaignId] = _newCampaign;
         _setURI(_nextCampaignId, _uri);
         emit CampaignCreated(_nextCampaignId, _name);
@@ -147,21 +156,27 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
         onlyOngoingCampaign(id)
         onlyEnoughSupply(id, amount)
     {
-        uint256 _price = _batchIdToCampaign[id].price * amount;
-        
-        // Calculate fees.
-        uint256 _feeAmount = _price * _fee / 100;
-        uint256 _ownerAmount = _price - _feeAmount;
+        Campaign memory _campaign = _batchIdToCampaign[id];
+
+        uint256 _discount = (_campaign.price * amount) * _campaign.discountPercentage / 100;
+        uint256 _fee = _discount * buybackFeePercentage / 100;
+
+        if (_fee > (_campaign.price * amount) * maxBuybackFeePercentage / 100) {
+            _fee = (_campaign.price * amount) * maxBuybackFeePercentage / 100;
+        }
+
+        uint256 _returnedAmount = _discount - _fee;
+        uint256 _ownerAmount = (_campaign.price * amount) - _discount;
 
         // Transfer funds.
-        _currency.transferFrom(account, address(this), _feeAmount);
-        _currency.transferFrom(account, _batchIdToCampaign[id].campaignOwner, _ownerAmount);
+        _currency.transferFrom(account, address(this), _discount);
+        _currency.transferFrom(account, _campaign.campaignOwner, _ownerAmount);
 
-        _currency.approve(_revolAddress, _feeAmount);
-        Revol(_revolAddress).buyRevol(_feeAmount, account);
+        _currency.approve(_revolAddress, _discount);
+        Revol(_revolAddress).buyRevolWithFee(_returnedAmount, account, _fee);
 
         // Update Campaign details.
-        _batchIdToCampaign[id].mintedSupply += amount;
+        _campaign.mintedSupply += amount;
 
         // Mint NFTs.
         _mint(account, id, amount, data);
