@@ -185,6 +185,8 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
 
     function usePFNft(uint256 batch, uint256 amount) external {
         // Prepare Data.
+        require(_batchIdToCampaign[batch].finishDate <= block.timestamp, "Caimpaign has not finished yet.");
+        
         uint256[] memory _batchList = new uint256[](1);
         uint256[] memory _amountList = new uint256[](1);
         _batchList[0] = batch;
@@ -192,7 +194,7 @@ contract PFNfts is Initializable, ERC1155Upgradeable, OwnableUpgradeable, ERC115
 
         // Burn NFTs.
         burnBatch(msg.sender, _batchList, _amountList);
-    } 
+    }
 
     function setURI(uint256 _campaignId, string memory _newURI) public onlyCampaignOwner(_campaignId) {
         _setURI(_campaignId, _newURI);

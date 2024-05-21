@@ -20,6 +20,7 @@ interface IUniswapV2Router {
 contract LoverTreasury is Initializable, UUPSUpgradeable, ReentrancyGuardUpgradeable, AccessControlUpgradeable {
     bytes32 public constant EXECUTION_ROLE = keccak256("EXECUTION_ROLE");
     address public uniswapRouterAddress;
+    address public loverAddress;
 
     event BuyBack(address indexed tokenA, address indexed tokenB, uint256 amountA, uint256 amountB);
 
@@ -27,10 +28,11 @@ contract LoverTreasury is Initializable, UUPSUpgradeable, ReentrancyGuardUpgrade
         _disableInitializers();
     }
 
-    function initialize(address defaultAdmin, address _uniswapRouterAddress) initializer public {
+    function initialize(address defaultAdmin, address _uniswapRouterAddress, address _loverAddress) initializer public {
         __UUPSUpgradeable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         uniswapRouterAddress = _uniswapRouterAddress;
+        loverAddress = _loverAddress;
     }
 
     function _authorizeUpgrade(address newImplementation)
@@ -39,13 +41,13 @@ contract LoverTreasury is Initializable, UUPSUpgradeable, ReentrancyGuardUpgrade
         override
     {}
 
-    function buyBack(address tokenA, address tokenB, uint256 amountA, uint256 amountOutMin, uint256 deadline) external onlyRole(EXECUTION_ROLE) nonReentrant {
+    function buyBack(address tokenA, uint256 amountA, uint256 amountOutMin, uint256 deadline) external onlyRole(EXECUTION_ROLE) nonReentrant {
         require(IERC20(tokenA).transferFrom(msg.sender, address(this), amountA), "Transfer of tokenA failed");
         require(IERC20(tokenA).approve(uniswapRouterAddress, amountA), "Approval of tokenA failed");
 
         address[] memory path = new address[](2);
         path[0] = tokenA;
-        path[1] = tokenB;
+        path[1] = loverAddress;
 
         IUniswapV2Router(uniswapRouterAddress).swapExactTokensForTokens(
             amountA,
@@ -55,7 +57,7 @@ contract LoverTreasury is Initializable, UUPSUpgradeable, ReentrancyGuardUpgrade
             deadline
         );
 
-        uint256 amountB = IERC20(tokenB).balanceOf(address(this));
-        emit BuyBack(tokenA, tokenB, amountA, amountB);
+        uint256 amountB = IERC20(loverAddress).balanceOf(address(this));
+        emit BuyBack(tokenA, loverAddress, amountA, amountB);
     }
 }
